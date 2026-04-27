@@ -14,7 +14,6 @@ def setup_driver():
         return driver
     except WebDriverException as e:
         print(f'Ошибка WebDriver: {e}')
-        print(f'Тип ошибки: {type(e).__name__}')
         return False
 
 
@@ -22,19 +21,19 @@ def search_in_post(driver, link_, keywords):
     main_window = driver.current_window_handle
 
     try:
-        driver.execute_script("window.open(arguments[0]);", link_)
+        driver.execute_script('window.open(arguments[0]);', link_)
         driver.switch_to.window(driver.window_handles[-1])
 
         wait = WebDriverWait(driver, 10)
-        text_box = wait.until(
-            EC.presence_of_element_located((
-                By.ID, 'post-content-body'
-            ))
+        body = wait.until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, 'div.article-body')
+                or (By.ID, 'post-content-body')
+            )
         )
 
-        text = text_box.text.lower()
-        result = any(word in text for word in keywords)
-
+        text = body.text.lower()
+        result = any(word.lower() in text for word in keywords)
         return result
 
     except TimeoutException:
@@ -44,13 +43,26 @@ def search_in_post(driver, link_, keywords):
         print('Не найден элемент страницы')
         return False
     except WebDriverException as e:
-        print(f'Ошибка инициализации WebDriver: {e}')
-        print(f'Тип ошибки: {type(e).__name__}')
+        print(f'Ошибка WebDriver: {e}')
         return False
     finally:
         if driver.current_window_handle != main_window:
             driver.close()
             driver.switch_to.window(main_window)
+
+
+def safe_find(parent, by, selector):
+    try:
+        return parent.find_element(by, selector)
+    except NoSuchElementException:
+        return None
+
+
+def safe_find_all(parent, by, selector):
+    try:
+        return parent.find_elements(by, selector)
+    except NoSuchElementException:
+        return []
 
 
 def search_by_preview(keywords, is_search_in_post=False):
@@ -60,33 +72,50 @@ def search_by_preview(keywords, is_search_in_post=False):
 
     try:
         driver.get('https://habr.com/ru/articles')
-        wait = WebDriverWait(driver, 10)
 
-        wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'article')))
-        articles = driver.find_elements(By.CSS_SELECTOR, 'article')
+        wait = WebDriverWait(driver, 10)
+        wait.until(EC.presence_of_all_elements_located(
+            (By.CSS_SELECTOR, 'article')
+            or (By.CSS_SELECTOR, '.tm-articles-list__item')
+        ))
+
+        articles = (safe_find_all(driver, By.CSS_SELECTOR, 'article')
+                    or safe_find_all(driver, By.CSS_SELECTOR, '.tm-articles-list__item')
+                    )
 
         articles_data = []
-        for element in articles:
-            date_tag = element.find_element(By.CSS_SELECTOR, 'time')
-            data = date_tag.get_attribute('datetime')[:10]
+        for article in articles:
+            date_tag = safe_find(article, By.CSS_SELECTOR, 'time')
+            date = date_tag.get_attribute('datetime')[:10] if date_tag else 'Дата не найдена'
 
-            header_tag = element.find_element(By.CSS_SELECTOR, 'a.tm-title__link')
-            title = header_tag.text
-            link = header_tag.get_attribute('href')
+            header_tag =(
+                safe_find(article, By.CSS_SELECTOR, 'h2')
+                or safe_find(article, By.CSS_SELECTOR, '.tm-title.tm-title_h2')
+            )
 
-            descriptions = element.find_elements(By.CSS_SELECTOR,'.article-formatted-body')
-            content = '\n'.join([desc.text for desc in descriptions])
+            title = header_tag.text.strip().lower() if header_tag else 'Заголовок не найден'
+            link_tag = (
+                    safe_find(header_tag, By.CSS_SELECTOR, 'a' )
+                    or safe_find(header_tag, By.CSS_SELECTOR, '.tm-articles-list__item')
+            )
+            link = link_tag.get_attribute('href') if link_tag else 'Ссылка не найдена'
+
+            descriptions = (
+                safe_find_all(article, By.CSS_SELECTOR, '.article-formatted-body')
+                or safe_find_all(article, By.CSS_SELECTOR, '.lead')
+            )
+            content = '\n'.join([desc.text for desc in descriptions]).lower()
 
             articles_data.append({
-                'data': data,
+                'data': date,
                 'title': title,
                 'link': link,
-                'content': content.lower()
+                'content': content
             })
 
         for article_data in articles_data:
-            all_text = article_data['title'].lower() + '\n' + article_data['content']
-            found_in_preview = any(word in all_text for word in keywords)
+            all_text = article_data['title'] + '\n' + article_data['content']
+            found_in_preview = any(word.lower() in all_text for word in keywords)
 
             if found_in_preview:
                 is_found = True
